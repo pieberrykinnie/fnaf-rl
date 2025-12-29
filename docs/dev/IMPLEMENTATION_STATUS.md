@@ -8,17 +8,17 @@
 - **Template-based detection**: Pre-recorded screenshot references for reliable matching
 - **Organized directory structure**:
   - `src/` - Core modules (observer, game_state)
-  - `tools/` - Utilities (frame_capture, template_manager, tests)
-  - `templates/` - Reference screenshots
+  - `tools/` - Utilities (frame_capture, template_manager, tests, discover_ui_regions)
+  - `templates/` - Reference screenshots (office, ui_elements)
   - `docs/` - Documentation
 
 ### 2. Core Components
 
-- **GameState dataclass** - Matches specification exactly (20+ fields)
+- **GameState dataclass** - Matches specification (state schema in `docs/game-state-spec.md`)
 - **GameStateExtractor** - Main interface for extraction
-- **TemplateManager** - Utilities for saving/organizing templates
-- **FrameCapture tool** - Interactive tool to collect templates during gameplay
-- **Test suite** - `test_game_state.py` for validation
+- **TemplateManager / FrameCapture** - Utilities for collecting and organizing templates
+- **UI discovery tool** - `tools/discover_ui_regions.py` outputs ROI constants for stable detection
+- **Test harness** - `tools/test_game_state.py` for live validation overlay
 
 ### 3. Implemented Detectors
 
@@ -26,23 +26,30 @@
 
 - **Method**: Template matching against pre-recorded office starting frame
 - **Behavior**: One-way state transition (False→True on first match)
-- **Confidence threshold**: 0.7+ (normalized cross-correlation)
+- **Confidence threshold**: 0.7 (normalized cross-correlation)
 - **Performance**: ~5ms per frame
-- **Test result**: Correctly detected transition from menu to gameplay
+
+#### Time Tracking ✅ **WORKING**
+
+- **Method**: Wall-clock `perf_counter` from first night start; resets only on manual reset
+- **Output**: `timeElapsed` in seconds
+
+#### Usage Bar (power usage 1–5) ✅ **WORKING**
+
+- **ROI**: Fixed region `USAGE_BAR_REGION` (120,657)-(223,689) from discovery tool
+- **Method**: Masked template matching (TM_CCOEFF_NORMED) over alpha-masked sprites 1–5
+- **Disambiguation**: Area-weighted tie-break + per-level minimum scores + tiny margin (0.001) to separate overlapping cumulative sprites
+- **Status**: Correctly distinguishes all five levels in synthetic tests; validated in-game via `tools.test_game_state`
 
 ---
 
 ## 🔄 Next Steps
 
-All other states are TODO:
-
-- Time tracking
-- Power level
-- Player actions (doors, lights, camera)
+- Power percentage detection
+- Player actions (doors, lights, camera toggle, current camera)
 - Animatronic tracking
-- Special events
-
-Focus on implementing these incrementally as needed.
+- Special events (jumpscare, blackout, Golden Freddy)
+- Add smoothing/debouncing where needed once more signals are online
 
 ---
 
@@ -64,8 +71,8 @@ fnaf-rl/
 ├── templates/
 │   ├── README.md              # Collection guidelines
 │   ├── office/
-│   │   └── starting_frame.png ✅ (collected)
-│   ├── ui_elements/           # (empty - for future)
+│   │   └── starting_frame.png ✅
+│   ├── ui_elements/           # usage_1..5.png ✅ collected
 │   └── animatronics/          # (empty - for future)
 │
 ├── data/
@@ -86,16 +93,16 @@ fnaf-rl/
 
 ## Usage
 
-### Test night detection
+### Live test (night + usage)
 
 ```bash
-python -m tools.test_game_state
+uv run -m tools.test_game_state
 ```
 
 ### Capture templates
 
 ```bash
-python -m tools.frame_capture
+uv run -m tools.frame_capture
 ```
 
 ---

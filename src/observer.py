@@ -40,7 +40,11 @@ class FnafObserver:
             
             if not win.isActive:
                 print(f"{Fore.YELLOW}Warning: Game window is not active. Focusing now...{Style.RESET_ALL}")
-                win.activate()
+                try:
+                    win.activate()
+                except Exception:
+                    # pygetwindow sometimes throws error even on success (error code 0)
+                    pass
                 time.sleep(0.5) # Wait for focus
 
             # Compute the client-area rectangle (excludes title bar and borders)
