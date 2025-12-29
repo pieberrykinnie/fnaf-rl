@@ -8,7 +8,7 @@ Usage:
     python -m tools.frame_capture
     
     Follow on-screen prompts to capture frames at key moments:
-    - Press 'S' to save current frame as a template
+    - Press 'S' to save current frame to office/ (choose filename)
     - Press 'Q' to quit
 """
 
@@ -45,7 +45,7 @@ class FrameCapture:
         Start interactive frame capture for template collection.
         
         Key bindings:
-            S - Save current frame as starting office template
+            S - Save current frame to office/ (prompt for filename)
             1 - Save as ui_element template (prompts for name)
             2 - Save as animatronic template (prompts for details)
             Q - Quit
@@ -58,7 +58,7 @@ class FrameCapture:
         print("="*70)
         print("\nPosition the game window and start gameplay.")
         print("Use these keys to capture templates:")
-        print("  S - Save current frame as OFFICE starting frame")
+        print("  S - Save current frame to office/ (prompt for filename)")
         print("  1 - Save as UI ELEMENT template")
         print("  2 - Save as ANIMATRONIC template")
         print("  Q - Quit\n")
@@ -96,7 +96,7 @@ class FrameCapture:
                     print("\nQuitting template capture...")
                     break
                 elif key == ord('s') or key == ord('S'):
-                    self._save_office_template()
+                    self._save_office_snapshot()
                 elif key == ord('1'):
                     self._save_ui_element()
                 elif key == ord('2'):
@@ -108,15 +108,34 @@ class FrameCapture:
             cv2.destroyAllWindows()
             self.template_manager.print_inventory()
     
-    def _save_office_template(self) -> None:
-        """Save current frame as office starting template."""
+    def _save_office_snapshot(self) -> None:
+        """Save current frame into the office/ templates folder."""
         if self.current_frame is None:
             print("No frame available!")
             return
-        
+
+        filename = input("Office filename (e.g., office_center.png): ").strip()
+        if not filename:
+            print("Cancelled.")
+            return
+        if not filename.lower().endswith(".png"):
+            filename += ".png"
+
         label = f"Captured at frame {self.frame_count}"
-        self.template_manager.save_office_starting_frame(self.current_frame, label)
-        print(f"\n✓ Saved office starting frame (#{self.frame_count})\n")
+
+        try:
+            # Reuse generic saver with custom filename under office
+            self.template_manager._save_template(  # type: ignore[attr-defined]
+                self.current_frame,
+                "office",
+                filename,
+                label
+            )
+        except Exception as exc:
+            print(f"Error saving office snapshot: {exc}")
+            return
+
+        print(f"\nSaved office snapshot as {filename}\n")
     
     def _save_ui_element(self) -> None:
         """Save current frame as UI element template."""
@@ -133,7 +152,7 @@ class FrameCapture:
         
         label = f"Captured at frame {self.frame_count}"
         self.template_manager.save_ui_element(self.current_frame, element_name, label)
-        print(f"✓ Saved UI element template\n")
+        print(f"Saved UI element template\n")
     
     def _save_animatronic(self) -> None:
         """Save current frame as animatronic template."""
@@ -156,7 +175,7 @@ class FrameCapture:
             location,
             label
         )
-        print(f"✓ Saved animatronic template\n")
+        print(f"Saved animatronic template\n")
 
 
 def main() -> None:

@@ -74,7 +74,23 @@ class GameState:
 
 
 class GameStateExtractor:
-    """Extracts game state from FNAF screen captures."""
+    """
+    Extracts game state from FNAF screen captures.
+
+    Cursor-driven interaction model (no CV for doors/lights/camera):
+    - Doors, lights, and camera flip are toggled via fixed `UIRegion` bounds.
+    - Camera flip triggers only when entering `CAMERA_FLIP_REGION` from above
+        and respects `cam_anim_time` cooldown between flips.
+    - Door toggles respect `door_anim_time` cooldown to avoid animation spam.
+    - Click handling uses rising-edge detection with `click_cooldown`, plus
+        same-pixel double-click suppression (~300ms) to prevent accidental toggles.
+    - Lights are mutually exclusive (left vs right); both forced off while camera is up.
+    - Usage is computed deterministically: `1 + doors + lights + camera` when interaction is enabled.
+    - Power and usage include smoothing and coherence to block impossible jumps.
+
+    Regions are resolution-specific and should be discovered/updated via
+    `tools/discover_ui_regions.py` rather than edited manually.
+    """
     
     # Usage bar constants (discovered with tools/discover_ui_regions.py)
     USAGE_BAR_POS = (120, 657)  # (x, y) top-left
@@ -115,6 +131,34 @@ class GameStateExtractor:
         x=183, y=623,
         width=52, height=24
     )
+
+    # Interactive regions (doors/lights/camera flip) - fixed for this resolution
+    LEFT_DOOR_REGION = UIRegion(
+        x=22, y=273,
+        width=62, height=92
+    )
+
+    LEFT_LIGHT_REGION = UIRegion(
+        x=24, y=391,
+        width=52, height=150
+    )
+
+    RIGHT_DOOR_REGION = UIRegion(
+        x=1191, y=291,
+        width=60, height=84
+    )
+
+    RIGHT_LIGHT_REGION = UIRegion(
+        x=1197, y=397,
+        width=56, height=116
+    )
+
+    CAMERA_FLIP_REGION = UIRegion(
+        x=253, y=649,
+        width=602, height=44
+    )
+
+    # Legacy CV thresholds (removed for cursor-driven mode)
     
     def __init__(self, template_dir: str | Path = "templates"):
         """
@@ -190,19 +234,53 @@ class GameStateExtractor:
         self.usage_smoothing_buffer: list[int] = []
         self.usage_smoothing_size: int = 11
         
+        # Cursor-driven mode only: no visual matching for door/light/camera
+
+        # Persistent player-action states
+        self.last_leftDoor: bool = False
+        self.last_rightDoor: bool = False
+        self.last_leftLight: bool = False
+        self.last_rightLight: bool = False
+
+        # Simple interaction override (hack mode) using fixed regions + cursor events
+        # Default to discovered interactive regions; can be overridden later
+        self.left_door_region: Optional[UIRegion] = self.LEFT_DOOR_REGION
+        self.left_light_region: Optional[UIRegion] = self.LEFT_LIGHT_REGION
+        self.right_door_region: Optional[UIRegion] = self.RIGHT_DOOR_REGION
+        self.right_light_region: Optional[UIRegion] = self.RIGHT_LIGHT_REGION
+        self.camera_flip_region: Optional[UIRegion] = self.CAMERA_FLIP_REGION
+
+        self.input_sample: Optional[tuple[int, int, bool, bool]] = None  # (x, y, in_bounds, left_down)
+        self.last_left_down: bool = False
+        self.last_in_cam_region: bool = False
+        self.last_cursor_pos: Optional[tuple[int, int]] = None
+        self.last_click_pos: Optional[tuple[int, int]] = None
+        self.last_click_time: float = 0.0
+        self.last_cam_toggle_time: float = 0.0
+        self.camera_up: bool = False
+        self.click_cooldown: float = 0.12
+        self.cam_anim_time: float = 0.25
+        self.door_anim_time: float = 0.5
+        self.last_left_door_toggle_time: float = 0.0
+        self.last_right_door_toggle_time: float = 0.0
+
         self.night_started: bool = False
         self.night_start_time: Optional[float] = None  # Wall-clock time when night began
     
-    def extract(self, frame: np.ndarray) -> GameState:
+    def extract(self, frame: np.ndarray, cursor_sample: Optional[tuple[int, int, bool, bool]] = None) -> GameState:
         """
         Extract complete game state from a frame.
         
         Args:
             frame: BGR frame from the game window
+            cursor_sample: Optional latest cursor sample as `(x, y, in_bounds, left_down)`
             
         Returns:
             GameState object with all detected values
         """
+        # Accept per-call cursor input to match other extractor inputs style
+        if cursor_sample is not None:
+            self.input_sample = cursor_sample
         # Detect night started state (only transitions from False->True, stays True until manual reset)
         if not self.night_started and self.office_template is not None:
             self.night_started = self._detect_night_started(frame)
@@ -222,19 +300,44 @@ class GameStateExtractor:
             time_elapsed = time.perf_counter() - self.night_start_time
         
         # Detect power and usage, storing confidence for coherence decisions
+        # Detect power and usage (usage overridden in cursor-driven mode)
         detected_power = self._detect_power(frame) if self.night_started else 0
         detected_usage, usage_confidence = self._detect_usage(frame) if self.night_started else (0, 0.0)
 
+        # Detect/Update camera state (cursor-driven)
+        is_on_camera = False
+        if self.night_started and self._interaction_enabled():
+            self._apply_interaction(frame)
+            is_on_camera = self.camera_up
+
+        # Detect door/light buttons when visible; keep last-known when hidden
+        left_door = self.last_leftDoor
+        right_door = self.last_rightDoor
+        left_light = False
+        right_light = False
+
+        if self.night_started and not is_on_camera:
+            if self._interaction_enabled():
+                left_door = self.last_leftDoor
+                right_door = self.last_rightDoor
+                left_light = self.last_leftLight
+                right_light = self.last_rightLight
+        else:
+            # Lights always off when camera is up; doors persist
+            left_light = False
+            right_light = False
+
         # Smooth usage over recent frames to damp camera-flip glitches
-        if self.night_started:
+        # Usage: cursor-driven invariant (usage - 1 = doors + lights + camera)
+        if self.night_started and self._interaction_enabled():
+            detected_usage = 1 + int(left_door) + int(right_door) + int(left_light) + int(right_light) + int(is_on_camera)
+        elif self.night_started:
+            # Smooth usage over recent frames to damp glitches when using CV
             self.usage_smoothing_buffer.append(detected_usage)
             if len(self.usage_smoothing_buffer) > self.usage_smoothing_size:
                 self.usage_smoothing_buffer.pop(0)
             nonzero = [u for u in self.usage_smoothing_buffer if u > 0]
-            if nonzero:
-                detected_usage = int(np.median(nonzero))
-            else:
-                detected_usage = 0
+            detected_usage = int(np.median(nonzero)) if nonzero else 0
         
         # Start with minimum viable state (only nightStarted and timeElapsed filled in)
         state = GameState(
@@ -246,7 +349,7 @@ class GameStateExtractor:
             rightLight=False,
             leftDoor=False,
             rightDoor=False,
-            isOnCamera=False,
+            isOnCamera=is_on_camera,
             currentCamera=0,
             lastSeenBonnie=-1,
             lastSeenBonnieTime=0.0,
@@ -266,8 +369,117 @@ class GameStateExtractor:
             state.power = self._apply_power_coherence(state.power)
             state.usage = self._apply_usage_coherence(state.usage, usage_confidence)
             self.last_usage = state.usage
+
+            # Commit button states after coherence passes
+            state.leftDoor = left_door
+            state.rightDoor = right_door
+            state.leftLight = left_light
+            state.rightLight = right_light
+
+            self.last_leftDoor = state.leftDoor
+            self.last_rightDoor = state.rightDoor
+            self.last_leftLight = state.leftLight
+            self.last_rightLight = state.rightLight
+        else:
+            state.leftDoor = left_door
+            state.rightDoor = right_door
+            state.leftLight = left_light
+            state.rightLight = right_light
         
         return state
+
+    def _interaction_enabled(self) -> bool:
+        """Return True if all interactive UI regions are configured."""
+        return (
+            self.left_door_region is not None
+            and self.left_light_region is not None
+            and self.right_door_region is not None
+            and self.right_light_region is not None
+            and self.camera_flip_region is not None
+        )
+
+    def _inside_region(self, x: int, y: int, region: Optional[UIRegion], w: int, h: int) -> bool:
+        if region is None:
+            return False
+        x1, y1, x2, y2 = region.bounds
+        if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
+            return False
+        return (x1 <= x < x2) and (y1 <= y < y2)
+
+    def _apply_interaction(self, frame: np.ndarray) -> None:
+        """
+        Update door/light/camera states based on the latest cursor sample.
+
+        Input comes from `self.input_sample` as `(x, y, in_bounds, left_down)`.
+        Rules:
+        - Camera flips when the cursor enters the camera region from above,
+            with `cam_anim_time` gating between flips.
+        - Doors toggle on click rising edge when cursor is inside their region,
+            with `door_anim_time` gating to mimic door animation cooldown.
+        - Lights toggle on click rising edge; they are mutually exclusive.
+        - While camera is up, lights are forced off and clicks do not toggle door/light.
+        - Duplicate clicks on the exact same pixel within ~300ms are suppressed.
+        """
+        if self.input_sample is None:
+            return
+        cx, cy, in_bounds, left_down = self.input_sample
+        h, w = frame.shape[:2]
+        now = time.perf_counter()
+
+        # Camera flip when entering region from outside, from above, with animation cooldown
+        prev_y = self.last_cursor_pos[1] if self.last_cursor_pos is not None else None
+        cam_top = self.camera_flip_region.y if self.camera_flip_region is not None else None
+        enters_from_above = (
+            prev_y is not None and cam_top is not None and prev_y < cam_top
+        )
+        in_cam = in_bounds and self._inside_region(cx, cy, self.camera_flip_region, w, h)
+        if in_cam and not self.last_in_cam_region and enters_from_above and (now - self.last_cam_toggle_time) >= self.cam_anim_time:
+            self.camera_up = not self.camera_up
+            self.last_cam_toggle_time = now
+            self.last_leftLight = False
+            self.last_rightLight = False
+            self.last_click_pos = None  # reset duplicate click memory after cam flip
+        self.last_in_cam_region = in_cam
+
+        # Door/light click handling on rising edge; toggles; lights mutually exclusive
+        rising = (left_down and not self.last_left_down and in_bounds and not self.camera_up and (now - self.last_click_time) >= self.click_cooldown)
+        same_pixel_double = (
+            self.last_click_pos is not None and (cx, cy) == self.last_click_pos and (now - self.last_click_time) < 0.3
+        )
+        if rising and not same_pixel_double:
+            if self._inside_region(cx, cy, self.left_door_region, w, h):
+                if (now - self.last_left_door_toggle_time) >= self.door_anim_time:
+                    self.last_leftDoor = not self.last_leftDoor
+                    self.last_left_door_toggle_time = now
+                    self.last_click_time = now
+                    self.last_click_pos = (cx, cy)
+            elif self._inside_region(cx, cy, self.left_light_region, w, h):
+                self.last_leftLight = not self.last_leftLight
+                if self.last_leftLight:
+                    self.last_rightLight = False
+                self.last_click_time = now
+                self.last_click_pos = (cx, cy)
+            elif self._inside_region(cx, cy, self.right_door_region, w, h):
+                if (now - self.last_right_door_toggle_time) >= self.door_anim_time:
+                    self.last_rightDoor = not self.last_rightDoor
+                    self.last_right_door_toggle_time = now
+                    self.last_click_time = now
+                    self.last_click_pos = (cx, cy)
+            elif self._inside_region(cx, cy, self.right_light_region, w, h):
+                self.last_rightLight = not self.last_rightLight
+                if self.last_rightLight:
+                    self.last_leftLight = False
+                self.last_click_time = now
+                self.last_click_pos = (cx, cy)
+
+        # Lights forced off while camera is up
+        if self.camera_up:
+            self.last_leftLight = False
+            self.last_rightLight = False
+
+        self.last_left_down = left_down
+        self.last_cursor_pos = (cx, cy)
+
     
     def _detect_night_started(self, frame: np.ndarray) -> bool:
         """
@@ -312,52 +524,73 @@ class GameStateExtractor:
     
     def _match_template(self, frame: np.ndarray, template: np.ndarray, threshold: float = 0.7) -> bool:
         """
-        Compare frame to template using normalized cross-correlation.
-        
+        Check whether a template matches the given frame above a threshold.
+
+        Uses `cv2.matchTemplate` with TM_CCOEFF_NORMED. If the template and
+        frame are the same size, performs a direct comparison. Otherwise, it
+        scans the frame for the best match. Returns True if the maximum match
+        score is greater than or equal to `threshold`.
+
         Args:
-            frame: Current frame to check
-            template: Reference template to match against
-            threshold: Confidence threshold (0.0-1.0) for match
-            
+            frame: Current BGR frame to check
+            template: Reference template image (BGR)
+            threshold: Confidence threshold in [0.0, 1.0]
+
         Returns:
-            True if frame matches template above threshold
+            True if a match is found above threshold, else False
         """
-        # Ensure frames are the same size
-        if frame.shape != template.shape:
+        if frame is None or template is None:
             return False
-        
-        # Use normalized cross-correlation for robust matching
-        result = cv2.matchTemplate(
-            frame, 
-            template, 
-            cv2.TM_CCOEFF_NORMED
-        )
-        
-        # Get best match score
-        if result.size > 0:
+
+        try:
+            fh, fw = frame.shape[:2]
+            th, tw = template.shape[:2]
+
+            # Convert both to grayscale for robust matching
+            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+
+            # If template is larger than frame in any dimension, resize template down
+            if th > fh or tw > fw:
+                scale_y = fh / float(th)
+                scale_x = fw / float(tw)
+                scale = min(scale_x, scale_y)
+                new_w = max(1, int(tw * scale))
+                new_h = max(1, int(th * scale))
+                template_gray = cv2.resize(template_gray, (new_w, new_h))
+                th, tw = template_gray.shape[:2]
+
+            # Perform template matching
+            result = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+            if result.size == 0:
+                return False
+
             max_val = float(np.max(result))
-            return max_val > threshold
-        
-        return False
+            return max_val >= threshold
+        except cv2.error:
+            return False
     
     def _extract_region(self, frame: np.ndarray, region: UIRegion) -> Optional[np.ndarray]:
         """
-        Extract a fixed UI region from a frame for isolated detection.
-        
+        Extract a fixed UI region from the frame for isolated detection.
+
         Args:
-            frame: Full frame from game window
-            region: UIRegion defining the area to extract
-            
+            frame: Full BGR frame from the game window
+            region: UIRegion defining the area to extract (absolute pixels)
+
         Returns:
-            Cropped region or None if region is out of bounds
+            Cropped region as a NumPy array, or None if out of bounds
         """
+        if frame is None or region is None:
+            return None
+
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = region.bounds
-        
+
         # Bounds check
-        if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
+        if x1 < 0 or y1 < 0 or x2 > w or y2 > h or x1 >= x2 or y1 >= y2:
             return None
-        
+
         return frame[y1:y2, x1:x2]
     
     def _detect_usage(self, frame: np.ndarray) -> tuple[int, float]:

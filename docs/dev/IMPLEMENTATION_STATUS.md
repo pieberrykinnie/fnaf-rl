@@ -23,24 +23,37 @@
 ### 3. Implemented Detectors
 
 #### Night Detection ✅ **WORKING**
+
 - Template match on office starting frame; one-way False→True
 
 #### Time Tracking ✅ **WORKING**
+
 - `perf_counter` from night start; resets on manual reset
 
 #### Power Percentage ✅ **WORKING**
+
 - Digit/percent template matching over fixed ROI (183,623, 52x24)
 - Smoothing: median over 5 readings; coherence blocks impossible increases and large drops on low-confidence reads (missing digits/percent)
 
 #### Usage Bar (1–5) ✅ **WORKING**
+
 - Fixed ROI from discovery tool; masked template matching with area tie-breaks
 - Confidence-aware smoothing: median over recent nonzero reads (size 11); coherence blocks low-confidence jumps >1 unless confidence is high
+
+#### Player Actions (Doors/Lights/Camera Flip) ✅ **WORKING**
+
+- Cursor-driven interactions over fixed `UIRegion` bounds (no CV)
+- Camera flip gated: enter `CAMERA_FLIP_REGION` from above; respects `cam_anim_time`
+- Doors toggled on rising-edge clicks; respect `door_anim_time` cooldown
+- Lights toggled on rising-edge clicks; mutually exclusive; forced off while camera is up
+- Duplicate same-pixel clicks suppressed (~300ms); general `click_cooldown` debounce
+- Usage computed deterministically when interaction enabled: `usage = 1 + doors + lights + camera`
 
 ---
 
 ## 🔄 Next Steps
 
-- Player actions (doors, lights, camera toggle, current camera)
+- Current camera selection mapping (when on cameras)
 - Animatronic tracking
 - Special events (jumpscare, blackout, Golden Freddy)
 
@@ -75,7 +88,8 @@ fnaf-rl/
 ├── docs/
 │   ├── game-state-spec.md     # Specification document
 │   └── dev/
-│       └── IMPLEMENTATION_STATUS.md  # This file
+│       ├── IMPLEMENTATION_STATUS.md  # This file
+│       └── INTERACTION_MODEL.md      # Cursor-driven interaction design
 │
 ├── main.py                    # Entry point (TBD)
 ├── README.md                  # Project overview

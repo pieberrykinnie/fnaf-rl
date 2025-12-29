@@ -35,6 +35,8 @@ def test_state_extraction() -> None:
     
     if not observer.find_window() or observer.monitor is None:
         return
+
+    cursor_fetch = observer._make_cursor_fetcher(observer.monitor)
     
     print("\n" + "="*70)
     print("GAME STATE EXTRACTION TEST")
@@ -50,8 +52,9 @@ def test_state_extraction() -> None:
             screenshot = np.array(observer.sct.grab(monitor))
             frame = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
             
-            # Extract state
-            state = extractor.extract(frame)
+            # Extract state with cursor sample for interactions
+            cursor_sample = cursor_fetch()
+            state = extractor.extract(frame, cursor_sample=cursor_sample)
             frame_count += 1
             
             # Display frame with state info
@@ -89,6 +92,33 @@ def test_state_extraction() -> None:
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
                 (0, 200, 255),
+                2
+            )
+            cv2.putText(
+                display_frame,
+                f"Cam: {'UP' if state.isOnCamera else 'DOWN'}",
+                (10, 230),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 180, 255),
+                2
+            )
+            cv2.putText(
+                display_frame,
+                f"L Door: {'CLOSED' if state.leftDoor else 'OPEN'} | L Light: {'ON' if state.leftLight else 'OFF'}",
+                (10, 270),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (150, 255, 150),
+                2
+            )
+            cv2.putText(
+                display_frame,
+                f"R Door: {'CLOSED' if state.rightDoor else 'OPEN'} | R Light: {'ON' if state.rightLight else 'OFF'}",
+                (10, 305),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (150, 200, 255),
                 2
             )
             

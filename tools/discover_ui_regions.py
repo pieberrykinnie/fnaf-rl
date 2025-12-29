@@ -30,6 +30,10 @@ class UIRegionDiscoverer:
     
     def __init__(self):
         self.regions = {}
+        self._drawing = False
+        self._start_pt = None
+        self._end_pt = None
+        self._current_rect = None
     
     def capture_frame(self) -> Optional[np.ndarray]:
         """
@@ -55,6 +59,88 @@ class UIRegionDiscoverer:
         except Exception as e:
             print(f"ERROR: Failed to grab frame: {e}")
             return None
+
+    def draw_bbox_on_frame(self, frame: np.ndarray, title: str = "Draw Region") -> Optional[UIRegion]:
+        """
+        Open a window to draw a bounding box directly on the captured frame.
+
+        Controls:
+        - Left mouse: click-drag to select rectangle
+        - R: reset current selection
+        - Enter/Space: confirm selection
+        - Esc: cancel
+
+        Returns:
+            UIRegion or None if cancelled
+        """
+        self._drawing = False
+        self._start_pt = None
+        self._end_pt = None
+        self._current_rect = None
+
+        display = frame.copy()
+
+        def on_mouse(event, x, y, flags, param):
+            nonlocal display
+            if event == cv2.EVENT_LBUTTONDOWN:
+                self._drawing = True
+                self._start_pt = (x, y)
+                self._end_pt = (x, y)
+            elif event == cv2.EVENT_MOUSEMOVE and self._drawing:
+                self._end_pt = (x, y)
+            elif event == cv2.EVENT_LBUTTONUP:
+                self._drawing = False
+                self._end_pt = (x, y)
+
+        cv2.namedWindow(title)
+        cv2.setMouseCallback(title, on_mouse)
+
+        while True:
+            overlay = display.copy()
+            if self._start_pt and self._end_pt:
+                x1, y1 = self._start_pt
+                x2, y2 = self._end_pt
+                x_min, x_max = min(x1, x2), max(x1, x2)
+                y_min, y_max = min(y1, y2), max(y1, y2)
+                width = x_max - x_min
+                height = y_max - y_min
+                if width > 0 and height > 0:
+                    self._current_rect = (x_min, y_min, width, height)
+                    cv2.rectangle(overlay, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+                    cv2.putText(
+                        overlay,
+                        f"({x_min},{y_min}) {width}x{height}",
+                        (x_min, max(y_min - 10, 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2,
+                    )
+
+            cv2.putText(
+                overlay,
+                "Draw box: LMB drag | Enter confirm | R reset | Esc cancel",
+                (20, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+            )
+            cv2.imshow(title, overlay)
+            key = cv2.waitKey(16) & 0xFF
+
+            if key in (13, 32):  # Enter or Space
+                if self._current_rect is not None:
+                    x, y, w, h = self._current_rect
+                    cv2.destroyWindow(title)
+                    return UIRegion(x=x, y=y, width=w, height=h)
+            elif key == 27:  # Esc
+                cv2.destroyWindow(title)
+                return None
+            elif key in (ord('r'), ord('R')):
+                self._start_pt = None
+                self._end_pt = None
+                self._current_rect = None
     
     def auto_detect_power_percentage(self, frame: np.ndarray) -> Optional[UIRegion]:
         """
@@ -362,18 +448,29 @@ class UIRegionDiscoverer:
             ""
         ]
 
+        interactive_keys = {"left_door", "left_light", "right_door", "right_light", "camera_flip"}
+
         for element_name, region in self.regions.items():
             prefix = element_name.upper()
-            lines.append(f"{prefix}_POS = ({region.x}, {region.y})  # (x, y)")
-            lines.append(f"{prefix}_SIZE = ({region.width}, {region.height})  # (width, height)")
-            lines.append(f"{prefix}_MATCH_THRESHOLD = 0.6  # tune as needed")
-            lines.append(
-                f"{prefix}_REGION = UIRegion(\n"
-                f"    x={region.x}, y={region.y},\n"
-                f"    width={region.width}, height={region.height}\n"
-                f")"
-            )
-            lines.append("")
+            if element_name in interactive_keys:
+                lines.append(
+                    f"{prefix}_REGION = UIRegion(\n"
+                    f"    x={region.x}, y={region.y},\n"
+                    f"    width={region.width}, height={region.height}\n"
+                    f")"
+                )
+                lines.append("")
+            else:
+                lines.append(f"{prefix}_POS = ({region.x}, {region.y})  # (x, y)")
+                lines.append(f"{prefix}_SIZE = ({region.width}, {region.height})  # (width, height)")
+                lines.append(f"{prefix}_MATCH_THRESHOLD = 0.6  # tune as needed")
+                lines.append(
+                    f"{prefix}_REGION = UIRegion(\n"
+                    f"    x={region.x}, y={region.y},\n"
+                    f"    width={region.width}, height={region.height}\n"
+                    f")"
+                )
+                lines.append("")
 
         return "\n".join(lines)
     
@@ -398,9 +495,10 @@ class UIRegionDiscoverer:
         print("Options:")
         print("  1. Auto-detect (fastest & most accurate)")
         print("  2. Manual entry")
-        print("  3. Skip")
+        print("  3. Draw on captured frame")
+        print("  4. Skip")
         
-        choice = input("Choice (1-3): ").strip()
+        choice = input("Choice (1-4): ").strip()
         
         if choice == "1":
             region = self.auto_detect_usage_bar(frame)
@@ -408,6 +506,10 @@ class UIRegionDiscoverer:
                 self.regions['usage_bar'] = region
         elif choice == "2":
             region = self.manual_entry('usage_bar')
+            if region:
+                self.regions['usage_bar'] = region
+        elif choice == "3":
+            region = self.draw_bbox_on_frame(frame, title="Draw usage_bar region")
             if region:
                 self.regions['usage_bar'] = region
         # else: skip
@@ -419,9 +521,10 @@ class UIRegionDiscoverer:
         print("Options:")
         print("  1. Auto-detect (searches for '99%' at night start)")
         print("  2. Manual entry")
-        print("  3. Skip")
+        print("  3. Draw on captured frame")
+        print("  4. Skip")
         
-        choice = input("Choice (1-3): ").strip()
+        choice = input("Choice (1-4): ").strip()
         
         if choice == "1":
             region = self.auto_detect_power_percentage(frame)
@@ -431,8 +534,38 @@ class UIRegionDiscoverer:
             region = self.manual_entry('power_percentage')
             if region:
                 self.regions['power_percentage'] = region
+        elif choice == "3":
+            region = self.draw_bbox_on_frame(frame, title="Draw power_percentage region")
+            if region:
+                self.regions['power_percentage'] = region
         # else: skip
         
+        # Record interactive regions
+        print("\n" + "-"*60)
+        print("Interactive Regions: doors/lights/camera flip")
+        print("-"*60)
+        print("Options:")
+        print("  Each interactive region is configured independently:")
+        print("    1. Manual entry")
+        print("    2. Draw on captured frame")
+        print("    3. Skip")
+
+        for key in ("left_door", "left_light", "right_door", "right_light", "camera_flip"):
+            print("\n" + "-"*60)
+            print(f"Interactive: {key}")
+            print("-"*60)
+            choice = input("Choice (1-3): ").strip()
+            if choice == "1":
+                region = self.manual_entry(key)
+                if region:
+                    self.regions[key] = region
+            elif choice == "2":
+                title = f"Draw {key} region"
+                region = self.draw_bbox_on_frame(frame, title=title)
+                if region:
+                    self.regions[key] = region
+            # else: skip
+
         # Generate output
         if self.regions:
             print("\n" + "="*60)
