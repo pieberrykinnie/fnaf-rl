@@ -8,6 +8,7 @@ Processes frame-by-frame to detect game state, animatronic positions, and player
 from dataclasses import dataclass, asdict
 from typing import Optional
 from pathlib import Path
+import time
 import cv2
 import numpy as np
 from enum import IntEnum
@@ -73,6 +74,7 @@ class GameStateExtractor:
         # Load reference templates
         self.office_template = self._load_template("office/starting_frame.png")
         self.night_started: bool = False
+        self.night_start_time: Optional[float] = None  # Wall-clock time when night began
     
     def extract(self, frame: np.ndarray) -> GameState:
         """
@@ -87,11 +89,19 @@ class GameStateExtractor:
         # Detect night started state (only transitions from False->True, stays True until manual reset)
         if not self.night_started and self.office_template is not None:
             self.night_started = self._detect_night_started(frame)
+            if self.night_started:
+                # Record when night began
+                self.night_start_time = time.perf_counter()
         
-        # Start with minimum viable state (only nightStarted filled in)
+        # Calculate time elapsed since night started
+        time_elapsed = 0.0
+        if self.night_started and self.night_start_time is not None:
+            time_elapsed = time.perf_counter() - self.night_start_time
+        
+        # Start with minimum viable state (only nightStarted and timeElapsed filled in)
         state = GameState(
             nightStarted=self.night_started,
-            timeElapsed=0.0,
+            timeElapsed=time_elapsed,
             power=0,
             usage=0,
             leftLight=False,

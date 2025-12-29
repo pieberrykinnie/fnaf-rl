@@ -81,7 +81,19 @@ def test_state_extraction() -> None:
                 1
             )
             
-            # Add instruction text
+            # Display time elapsed if night is active
+            if state.nightStarted:
+                minutes = int(state.timeElapsed // 60)
+                seconds = int(state.timeElapsed % 60)
+                cv2.putText(
+                    display_frame,
+                    f"Time: {minutes}:{seconds:02d}",
+                    (10, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 255),
+                    1
+                )
             cv2.putText(
                 display_frame,
                 "Press Q to quit",
