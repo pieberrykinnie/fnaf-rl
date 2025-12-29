@@ -1,6 +1,7 @@
 import time
 import ctypes
 from ctypes import wintypes
+from collections.abc import Callable
 import cv2
 import mss
 import numpy as np
@@ -10,6 +11,9 @@ from colorama import Fore, Style, init
 
 WINDOW_NAME: str = "Five Nights at Freddy's"
 TARGET_FPS: int = 24  # Desired FPS for observation loop
+Monitor = dict[str, int]
+CursorInfo = tuple[int, int, bool]
+user32 = ctypes.windll.user32
 
 
 # Initialize color output
@@ -19,7 +23,8 @@ class FnafObserver:
     def __init__(self, window_title: str = WINDOW_NAME) -> None:
         self.window_title: str = window_title
         self.sct = mss.mss()
-        self.monitor: dict[str, int] | None = None
+        self.monitor: Monitor | None = None
+        self.hwnd: int | None = None
         
         self.target_fps: int = TARGET_FPS
         self.interval: float = 1.0 / self.target_fps
@@ -39,11 +44,12 @@ class FnafObserver:
 
             # Compute the client-area rectangle (excludes title bar and borders)
             hwnd = win._hWnd  # Win32 window handle
+            self.hwnd = hwnd
             rect = wintypes.RECT()
-            if ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(rect)):
+            if user32.GetClientRect(hwnd, ctypes.byref(rect)):
                 # Convert client (0,0) to screen coords to locate the content area
                 pt = wintypes.POINT(0, 0)
-                ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+                user32.ClientToScreen(hwnd, ctypes.byref(pt))
                 client_width = rect.right - rect.left
                 client_height = rect.bottom - rect.top
                 self.monitor = {
@@ -70,54 +76,80 @@ class FnafObserver:
         
         return window_found
 
-    def start_observing(self):
+    def start_observing(self) -> None:
+        """Start capturing frames and cursor position at target FPS."""
         if not self.find_window() or self.monitor is None:
             return
 
-        print(f"{Fore.CYAN}Starting Observation Loop at {self.target_fps} FPS... (Press Ctrl+C to stop){Style.RESET_ALL}")
-        
+        monitor = self.monitor
+        grab = self.sct.grab
+        to_bgr = cv2.cvtColor
+        imshow = cv2.imshow
+        wait_key = cv2.waitKey
+        sleep = time.sleep
+        interval = self.interval
+        cursor_fetch = self._make_cursor_fetcher(monitor)
+
         frame_count: int = 0
-        start_time: float = time.time()
-        
+        start_time: float = time.perf_counter()
+
+        print(f"{Fore.CYAN}Starting Observation Loop at {self.target_fps} FPS... (Press Ctrl+C to stop){Style.RESET_ALL}")
+
         try:
             while True:
-                loop_start = time.time()
+                loop_start = time.perf_counter()
 
-                # 1. Capture Frame
-                screenshot = np.array(self.sct.grab(self.monitor))
-                
-                # 2. Process (Simulate minimal preprocessing)
-                # Drop Alpha channel (BGRA -> BGR) to save memory
-                frame = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
-                
-                # 3. Log Stats
+                screenshot = np.array(grab(monitor))
+                frame = to_bgr(screenshot, cv2.COLOR_BGRA2BGR)
+
+                cursor_pos = cursor_fetch()
+
                 frame_count += 1
-                elapsed = time.time() - start_time
+                elapsed = time.perf_counter() - start_time
                 actual_fps = frame_count / elapsed
+                if cursor_pos is not None:
+                    cx, cy, in_bounds = cursor_pos
+                    print(f"FPS: {actual_fps:.2f} | Size: {frame.shape} | Cursor: ({cx}, {cy}) | InWindow: {in_bounds}")
+                else:
+                    print(f"FPS: {actual_fps:.2f} | Size: {frame.shape} | Cursor: unavailable")
 
-                print(f"FPS: {actual_fps:.2f} | Size: {frame.shape}")
-                
-                # Show what the bot sees (updates every frame)
-                cv2.imshow("Bot View", frame)
-                # Non-blocking key check with 1ms timeout
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                imshow("Bot View", frame)
+                if wait_key(1) & 0xFF == ord('q'):
                     raise KeyboardInterrupt
 
-                # 4. Latency Management
-                # Calculate how long processing took
-                process_time = time.time() - loop_start
-                sleep_time = self.interval - process_time
-                
+                process_time = time.perf_counter() - loop_start
+                sleep_time = interval - process_time
                 if sleep_time > 0:
-                    time.sleep(sleep_time)
+                    sleep(sleep_time)
                 else:
-                    print(f"{Fore.RED}LAG WARNING: Frame took {process_time:.4f}s (Target: {self.interval}s){Style.RESET_ALL}")
+                    print(f"{Fore.RED}LAG WARNING: Frame took {process_time:.4f}s (Target: {interval}s){Style.RESET_ALL}")
 
         except KeyboardInterrupt:
             print("\nStopping...")
         finally:
             cv2.destroyAllWindows()
-            print(f"Session ended. Avg FPS: {frame_count / (time.time() - start_time):.2f}")
+            print(f"Session ended. Avg FPS: {frame_count / (time.perf_counter() - start_time):.2f}")
+
+    def _make_cursor_fetcher(self, monitor: Monitor) -> Callable[[], CursorInfo | None]:
+        """Builds a zero-allocation cursor fetcher relative to the given monitor."""
+        left = monitor["left"]
+        top = monitor["top"]
+        width = monitor["width"]
+        height = monitor["height"]
+
+        pt = wintypes.POINT()
+        get_cursor_pos = user32.GetCursorPos
+
+        def fetch() -> CursorInfo | None:
+            if not get_cursor_pos(ctypes.byref(pt)):
+                return None
+
+            rel_x = pt.x - left
+            rel_y = pt.y - top
+            in_bounds = 0 <= rel_x < width and 0 <= rel_y < height
+            return rel_x, rel_y, in_bounds
+
+        return fetch
 
 
 def main() -> None:
