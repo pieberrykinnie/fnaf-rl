@@ -23,33 +23,26 @@
 ### 3. Implemented Detectors
 
 #### Night Detection ✅ **WORKING**
-
-- **Method**: Template matching against pre-recorded office starting frame
-- **Behavior**: One-way state transition (False→True on first match)
-- **Confidence threshold**: 0.7 (normalized cross-correlation)
-- **Performance**: ~5ms per frame
+- Template match on office starting frame; one-way False→True
 
 #### Time Tracking ✅ **WORKING**
+- `perf_counter` from night start; resets on manual reset
 
-- **Method**: Wall-clock `perf_counter` from first night start; resets only on manual reset
-- **Output**: `timeElapsed` in seconds
+#### Power Percentage ✅ **WORKING**
+- Digit/percent template matching over fixed ROI (183,623, 52x24)
+- Smoothing: median over 5 readings; coherence blocks impossible increases and large drops on low-confidence reads (missing digits/percent)
 
-#### Usage Bar (power usage 1–5) ✅ **WORKING**
-
-- **ROI**: Fixed region `USAGE_BAR_REGION` (120,657)-(223,689) from discovery tool
-- **Method**: Masked template matching (TM_CCOEFF_NORMED) over alpha-masked sprites 1–5
-- **Disambiguation**: Area-weighted tie-break + per-level minimum scores + tiny margin (0.001) to separate overlapping cumulative sprites
-- **Status**: Correctly distinguishes all five levels in synthetic tests; validated in-game via `tools.test_game_state`
+#### Usage Bar (1–5) ✅ **WORKING**
+- Fixed ROI from discovery tool; masked template matching with area tie-breaks
+- Confidence-aware smoothing: median over recent nonzero reads (size 11); coherence blocks low-confidence jumps >1 unless confidence is high
 
 ---
 
 ## 🔄 Next Steps
 
-- Power percentage detection
 - Player actions (doors, lights, camera toggle, current camera)
 - Animatronic tracking
 - Special events (jumpscare, blackout, Golden Freddy)
-- Add smoothing/debouncing where needed once more signals are online
 
 ---
 
@@ -60,19 +53,20 @@ fnaf-rl/
 ├── src/
 │   ├── __init__.py
 │   ├── observer.py            # Frame capture (24 FPS)
-│   └── game_state.py          # State extractor with night detection
+│   └── game_state.py          # State extractor (night, time, power %, usage)
 │
 ├── tools/
 │   ├── __init__.py
 │   ├── template_manager.py    # Template management utility
 │   ├── frame_capture.py       # Interactive capture tool
+│   ├── discover_ui_regions.py # Auto-detect UI ROIs
 │   └── test_game_state.py     # Validation script
 │
 ├── templates/
 │   ├── README.md              # Collection guidelines
 │   ├── office/
 │   │   └── starting_frame.png ✅
-│   ├── ui_elements/           # usage_1..5.png ✅ collected
+│   ├── ui_elements/           # power digits/percent, usage_1..5.png ✅ collected
 │   └── animatronics/          # (empty - for future)
 │
 ├── data/

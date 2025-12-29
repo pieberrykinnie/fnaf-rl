@@ -92,6 +92,17 @@ def test_state_extraction() -> None:
                 2
             )
             
+            # Show current power level
+            cv2.putText(
+                display_frame,
+                f"Power: {state.power}%",
+                (10, 190),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (100, 100, 255),
+                2
+            )
+            
             # Display time elapsed if night is active
             if state.nightStarted:
                 minutes = int(state.timeElapsed // 60)
@@ -122,6 +133,7 @@ def test_state_extraction() -> None:
                 print(f"\nFrame {frame_count}:")
                 print(f"  nightStarted: {state.nightStarted}")
                 print(f"  usage: {state.usage}")
+                print(f"  power: {state.power}%")
                 print(f"  Full state:")
                 state_dict = state.to_dict()
                 print(json.dumps(state_dict, indent=4))

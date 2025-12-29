@@ -56,6 +56,152 @@ class UIRegionDiscoverer:
             print(f"ERROR: Failed to grab frame: {e}")
             return None
     
+    def auto_detect_power_percentage(self, frame: np.ndarray) -> Optional[UIRegion]:
+        """
+        Automatically detect power percentage text (e.g., "99%") by matching the "99%" pattern.
+        
+        Searches for the specific "99%" pattern at night start by template matching
+        the individual digits and percent sign, then computes their bounding box.
+        
+        Args:
+            frame: Game frame
+            
+        Returns:
+            UIRegion if detected, None otherwise
+        """
+        print("\n" + "="*60)
+        print("Auto-Detecting: power_percentage")
+        print("="*60)
+        
+        # Load templates
+        path = Path(__file__).parent.parent / "templates" / "ui_elements"
+        digit_9_raw = cv2.imread(str(path / "power_9.png"), cv2.IMREAD_UNCHANGED)
+        percent_raw = cv2.imread(str(path / "power_percent.png"), cv2.IMREAD_UNCHANGED)
+        
+        if digit_9_raw is None or percent_raw is None:
+            print("ERROR: Failed to load templates")
+            return None
+        
+        digit_9 = digit_9_raw[:, :, :3]
+        percent_sign = percent_raw[:, :, :3]
+        
+        print(f"Digit '9': {digit_9.shape}; Percent: {percent_sign.shape}")
+        print(f"Frame size: {frame.shape}")
+        
+        # Search in bottom-left area
+        h, w = frame.shape[:2]
+        search_x0, search_x1 = 0, min(300, w)
+        search_y0, search_y1 = max(h - 150, 0), h
+        roi = frame[search_y0:search_y1, search_x0:search_x1]
+        print(f"Searching ROI: x[{search_x0},{search_x1}) y[{search_y0},{search_y1})")
+        
+        # Find all "9" matches in ROI
+        try:
+            result_9 = cv2.matchTemplate(roi, digit_9, cv2.TM_CCOEFF_NORMED)
+        except cv2.error as e:
+            print(f"ERROR: Template matching failed: {e}")
+            return None
+        
+        if result_9.size == 0:
+            print("ERROR: No digit matches found")
+            return None
+        
+        # Get all matches above threshold (not just the best)
+        threshold = 0.65
+        matches = np.where(result_9 >= threshold)
+        
+        if len(matches[0]) == 0:
+            print(f"ERROR: No matches above threshold {threshold}")
+            print(f"Best match score: {np.max(result_9):.2%}")
+            return None
+        
+        # Convert to (x, y) list
+        digit_positions = [(matches[1][i], matches[0][i]) for i in range(len(matches[0]))]
+        digit_positions.sort()  # Sort left to right
+        
+        print(f"Found {len(digit_positions)} digit matches at x positions: {[x for x,y in digit_positions]}")
+        
+        # We expect the first two matches to be the two "9"s
+        if len(digit_positions) < 2:
+            print("ERROR: Expected at least 2 digit matches for '99%'")
+            return None
+        
+        x_first_9, y_first_9 = digit_positions[0]
+        x_second_9, y_second_9 = digit_positions[1]
+        
+        digit_width = digit_9.shape[1]
+        digit_height = digit_9.shape[0]
+        
+        print(f"First '9': roi_x={x_first_9}, roi_y={y_first_9}")
+        print(f"Second '9': roi_x={x_second_9}, roi_y={y_second_9}")
+        
+        # Find percent sign after the second "9"
+        # Search in a small region to the right of the second "9"
+        search_start_x = x_second_9 + digit_width - 5  # Start search a bit into second digit
+        if search_start_x < roi.shape[1]:
+            roi_percent_search = roi[:, search_start_x:]
+            try:
+                result_pct = cv2.matchTemplate(roi_percent_search, percent_sign, cv2.TM_CCOEFF_NORMED)
+                if result_pct.size > 0:
+                    best_pct_score = np.max(result_pct)
+                    best_pct_loc = np.unravel_index(np.argmax(result_pct), result_pct.shape)
+                    x_percent_local = best_pct_loc[1]
+                    y_percent = best_pct_loc[0]
+                    x_percent = x_percent_local + search_start_x
+                    
+                    print(f"Percent '%': roi_x={x_percent}, roi_y={y_percent}, score={best_pct_score:.2%}")
+                    
+                    # Compute bounding box
+                    left = x_first_9 + search_x0
+                    top = min(y_first_9, y_second_9, y_percent) + search_y0
+                    right = x_percent + percent_sign.shape[1] + search_x0
+                    bottom = max(y_first_9 + digit_height, y_second_9 + digit_height, y_percent + percent_sign.shape[0]) + search_y0
+                    
+                    width = right - left
+                    height = bottom - top
+                    
+                    print(f"\nBounding box: ({left}, {top}) size={width}x{height}")
+                    
+                    if width <= 0 or height <= 0:
+                        print("ERROR: Invalid bounding box dimensions")
+                        return None
+                    
+                    region = UIRegion(x=left, y=top, width=width, height=height)
+                else:
+                    print("WARNING: Percent sign not found, estimating from digits only")
+                    left = x_first_9 + search_x0
+                    top = y_first_9 + search_y0
+                    right = x_second_9 + digit_width + 15 + search_x0  # Estimate space for percent
+                    bottom = y_first_9 + digit_height + search_y0
+                    width, height = right - left, bottom - top
+                    region = UIRegion(x=left, y=top, width=width, height=height)
+                    print(f"Estimated region: ({left}, {top}) size={width}x{height}")
+            except cv2.error as e:
+                print(f"ERROR: Percent matching failed: {e}")
+                return None
+        else:
+            print("ERROR: Search area out of bounds")
+            return None
+        
+        # Visual confirmation
+        show = input("\nShow visual confirmation? (y/n): ").strip().lower()
+        if show == 'y':
+            display = frame.copy()
+            cv2.rectangle(display, (region.x, region.y), 
+                         (region.x + region.width, region.y + region.height), 
+                         (0, 255, 0), 2)
+            cv2.putText(display,
+                       f"power_percentage: ({region.x}, {region.y}) {region.width}x{region.height}",
+                       (region.x, max(region.y - 10, 20)),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.imshow("Auto-Detection Result", display)
+            print("Press any key to close visualization...")
+            cv2.waitKey(0)
+            cv2.destroyWindow("Auto-Detection Result")
+        
+        print(f"OK: Region detected: {region}")
+        return region
+
     def auto_detect_usage_bar(self, frame: np.ndarray) -> Optional[UIRegion]:
         """
         Automatically detect usage bar by matching sprite.
@@ -264,6 +410,27 @@ class UIRegionDiscoverer:
             region = self.manual_entry('usage_bar')
             if region:
                 self.regions['usage_bar'] = region
+        # else: skip
+        
+        # Discover power_percentage
+        print("\n" + "-"*60)
+        print("Element: power_percentage")
+        print("-"*60)
+        print("Options:")
+        print("  1. Auto-detect (searches for '99%' at night start)")
+        print("  2. Manual entry")
+        print("  3. Skip")
+        
+        choice = input("Choice (1-3): ").strip()
+        
+        if choice == "1":
+            region = self.auto_detect_power_percentage(frame)
+            if region:
+                self.regions['power_percentage'] = region
+        elif choice == "2":
+            region = self.manual_entry('power_percentage')
+            if region:
+                self.regions['power_percentage'] = region
         # else: skip
         
         # Generate output
