@@ -13,6 +13,7 @@ WINDOW_NAME: str = "Five Nights at Freddy's"
 TARGET_FPS: int = 24  # Desired FPS for observation loop
 Monitor = dict[str, int]
 CursorInfo = tuple[int, int, bool]
+MouseSample = tuple[int, int, bool, bool]
 user32 = ctypes.windll.user32
 
 
@@ -108,8 +109,11 @@ class FnafObserver:
                 elapsed = time.perf_counter() - start_time
                 actual_fps = frame_count / elapsed
                 if cursor_pos is not None:
-                    cx, cy, in_bounds = cursor_pos
-                    print(f"FPS: {actual_fps:.2f} | Size: {frame.shape} | Cursor: ({cx}, {cy}) | InWindow: {in_bounds}")
+                    cx, cy, in_bounds, left_down = cursor_pos
+                    print(
+                        f"FPS: {actual_fps:.2f} | Size: {frame.shape} | Cursor: ({cx}, {cy}) | "
+                        f"InWindow:{in_bounds} L:{left_down}"
+                    )
                 else:
                     print(f"FPS: {actual_fps:.2f} | Size: {frame.shape} | Cursor: unavailable")
 
@@ -130,8 +134,8 @@ class FnafObserver:
             cv2.destroyAllWindows()
             print(f"Session ended. Avg FPS: {frame_count / (time.perf_counter() - start_time):.2f}")
 
-    def _make_cursor_fetcher(self, monitor: Monitor) -> Callable[[], CursorInfo | None]:
-        """Builds a zero-allocation cursor fetcher relative to the given monitor."""
+    def _make_cursor_fetcher(self, monitor: Monitor) -> Callable[[], MouseSample | None]:
+        """Builds a zero-allocation cursor + left-button sampler relative to the given monitor."""
         left = monitor["left"]
         top = monitor["top"]
         width = monitor["width"]
@@ -139,15 +143,18 @@ class FnafObserver:
 
         pt = wintypes.POINT()
         get_cursor_pos = user32.GetCursorPos
+        get_key = user32.GetAsyncKeyState
+        VK_LBUTTON = 0x01
 
-        def fetch() -> CursorInfo | None:
+        def fetch() -> MouseSample | None:
             if not get_cursor_pos(ctypes.byref(pt)):
                 return None
 
             rel_x = pt.x - left
             rel_y = pt.y - top
             in_bounds = 0 <= rel_x < width and 0 <= rel_y < height
-            return rel_x, rel_y, in_bounds
+            left_down = bool(get_key(VK_LBUTTON) & 0x8000)
+            return rel_x, rel_y, in_bounds, left_down
 
         return fetch
 
