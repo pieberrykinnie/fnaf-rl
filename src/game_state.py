@@ -154,7 +154,7 @@ class GameStateExtractor:
     )
 
     CAMERA_FLIP_REGION = UIRegion(
-        x=253, y=649,
+        x=253, y=652,
         width=602, height=44
     )
 
